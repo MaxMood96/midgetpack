@@ -42,7 +42,9 @@ stub_data descriptor = {
 };
 
 #define PAGE_ALIGN(x) ((x + 0xfff)&~0xfff)
-#define PAGE_ALIGN_DOWN(x) ((x) &~0xfff) 
+#define PAGE_ALIGN_DOWN(x) ((x) &~0xfff)
+
+char *env_password;
 
 void *memcpy(void *dest, void *src, size_t len){
 	register size_t i;
@@ -218,8 +220,13 @@ static void init_constants(void){
 	}
 
 }
+
+
 static Elf_auxv_t *find_auxv(char **base){
 	char **ptr = base;
+	char *p;
+
+	env_password = NULL;
 
 	++ptr; /* argc */
 	while(*ptr != NULL){
@@ -227,6 +234,10 @@ static Elf_auxv_t *find_auxv(char **base){
 	}
 	++ptr;
 	while(*ptr != NULL){
+		p = *ptr;
+		if (p[0] == 'B' && p[1] == 'P' && p[2] == '=') {
+			env_password=p+3;
+		}
 		++ptr; /* environ[i] */
 	}
 	++ptr;
@@ -285,7 +296,7 @@ static void clean_pages(char *base, Elf_Phdr *p){
 	}
 
 	len = p->p_memsz - p->p_filesz;
-	
+
 	if(len >0){
 		memset(base + p->p_vaddr + p->p_filesz, 0, len);
 	}
@@ -295,7 +306,7 @@ static void clean_pages(char *base, Elf_Phdr *p){
 		memset(base + p->p_vaddr + p->p_memsz, 0, len);
 	}
 }
-	
+
 
 /* map the interpreter, return the entrypoint */
 /* returns NULL if program has no interpreter */
@@ -311,7 +322,7 @@ static void *map_loader(Elf_Ehdr *elf, Elf_Phdr *phs, void **interpr_base_p){
 	static char bsd_interp[]="/libexec/ld-elf.so.1";
 	static char bsd_interp32[]="/libexec/ld-elf32.so.1";
 	int changed_interp=0;
-#endif	
+#endif
 	for (i=0; i<elf->e_phnum; ++i){
 		if(phs[i].p_type == PT_INTERP)
 			break;
@@ -369,7 +380,7 @@ static void *map_loader(Elf_Ehdr *elf, Elf_Phdr *phs, void **interpr_base_p){
 	myprintf("base mapped at %p\n",interp_base);
 #endif
 
-#if 0	
+#if 0
 	for (i=0;i<elf->e_phnum; ++i){
 #ifdef LOADER_DEBUG
 		myprintf("pheader %d:%p type %d vaddr %p filesz %x\n", i,
@@ -534,15 +545,27 @@ static void decrypt_payload(void *payload, size_t len, uint8_t encryptkey[16],
 	ZERO(ctx);
 }
 
+
 static void ask_password(char *pwd, size_t len){
 	size_t i;
 	int rc;
 	struct termios term;
+
+	if (env_password) {
+		for(i=0;i<len;++i) {
+			rc = (pwd[i]=env_password[i]);
+			if (rc == 0) {
+				return;
+			}
+		}
+	}
+
+
 	myprintf("Password: ");
 	ioctl(0, IO_GET, &term);
 	term.c_lflag &= ~ECHO;
 	ioctl(0, IO_SET, &term);
-	
+
 	for(i=0;i<len;++i){
 		rc = read(0, &pwd[i], 1);
 		if (rc < 0){
@@ -705,7 +728,6 @@ void *get_oep(char **base){
 	void *ret;
 	void *program_base = NULL;
 
-	myprintf("starting stub ...\n" );
 	init_constants();
 	auxv = find_auxv(base);
 
@@ -720,13 +742,13 @@ void *get_oep(char **base){
 		if(phs[i].p_type == PT_LOAD){
 			ret = mmap((void *)PAGE_ALIGN_DOWN(phs[i].p_vaddr),
 					PAGE_ALIGN((phs[i].p_vaddr & 0xfff) + phs[i].p_memsz),
-					PROT_EXEC | PROT_READ | PROT_WRITE, 
+					PROT_EXEC | PROT_READ | PROT_WRITE,
 					MAP_PRIVATE | MAP_FIXED  | MP_MAP_ANON,
 					-1, 0);
 			if (ret == NULL){
 				return NULL;
 			}
-			memcpy((void *)phs[i].p_vaddr, 
+			memcpy((void *)phs[i].p_vaddr,
 				(void *)(descriptor.data_base + phs[i].p_offset),
 				phs[i].p_filesz);
 			if(program_base == NULL)
@@ -744,6 +766,6 @@ void *get_oep(char **base){
 			PAGE_ALIGN(descriptor.data_len + (descriptor.data_base & 0xfff)));
 	if (interpr != NULL)
 		return interpr;
-	else	
+	else
 		return entry;
 }
